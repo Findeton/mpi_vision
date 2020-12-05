@@ -1,7 +1,5 @@
 import fastbook
 from fastbook import *
-import torch
-import os
 
 device = torch.device("cuda")
 
