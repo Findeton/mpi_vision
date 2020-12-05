@@ -1,5 +1,6 @@
 import fastbook
 from fastbook import *
+import PIL
 
 device = torch.device("cuda")
 
