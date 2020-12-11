@@ -1,9 +1,6 @@
 import fastbook
 from fastbook import *
 import PIL
-import torchvision
-from fastai.vision import *
-import matplotlib.pyplot as plt
 
 device = torch.device("cuda")
 
@@ -28,11 +25,11 @@ def meshgrid_abs_torch(batch, height, width):
   Returns:
     x,y grid coordinates [batch, 3, height, width]
   """
-  xs = torch.linspace(0.0, width-1, width, device=device)
-  ys = torch.linspace(0.0, height-1, height, device=device)
-  ys, xs = torch.meshgrid(xs, ys, device=device)
-  ones = torch.ones_like(xs, device=device)
-  coords = torch.stack([xs, ys, ones], axis=0)
+  xs = torch.linspace(0.0, width-1, width)
+  ys = torch.linspace(0.0, height-1, height)
+  ys, xs = torch.meshgrid(xs, ys)
+  ones = torch.ones_like(xs).to(device)
+  coords = torch.stack([xs.to(device), ys.to(device), ones], axis=0)
   return torch.unsqueeze(coords, 0).repeat(batch, 1, 1, 1)
 
 def divide_safe_torch(num, den, name=None):
@@ -127,7 +124,7 @@ def bilinear_wrapper_torch(imgs, coords):
   # change image from (N, H, W, C) to (N, C, H, W)
   imgs = imgs.permute([0, 3, 1, 2])
   # TODO: resize coords from (0,1) to (-1, 1)
-  coords2 = torch.Tensor([-1, -1], device=device) + 2.0 * coords
+  coords2 = torch.Tensor([-1, -1]).to(device) + 2.0 * coords
   imgs_sampled = torch.nn.functional.grid_sample(imgs, coords2)
   # imgs_sampled = torch.div(2.0* (imgs_sampled0 + torch.Tensor([1.0, 1.0])).to(device), torch.Tensor([(x_max - x_min), (y_max - y_min)])).to(device)
   # permute back to (N, H, W, C)
@@ -188,7 +185,7 @@ def transform_plane_imgs_torch(imgs, pixel_coords_trg, k_s, k_t, rot, t, n_hat, 
   # convert from [0-height-1, width -1] to [0-1, 0-1]
   height_t = pixel_coords_trg.shape[-3]
   width_t = pixel_coords_trg.shape[-2]
-  pixel_coords_t2s = pixel_coords_t2s / torch.Tensor([height_t - 1, width_t - 1], device=device)
+  pixel_coords_t2s = pixel_coords_t2s / torch.Tensor([height_t - 1, width_t - 1]).to(device)
 
   # print("pixel_coords_t2s ", L(pixel_coords_t2s))
 
@@ -257,7 +254,7 @@ def projective_forward_homography_torch(src_images, intrinsics, pose, depths):
   # a: [L, B, 1, 1], plane equation displacement (n_hat * p_src + a = 0)
   rot = pose[:, :3, :3]
   t = pose[:, :3, 3:]
-  n_hat = torch.Tensor([0., 0., 1.], device=device).reshape([1,1,1,3]) # tf.constant([0., 0., 1.], shape=[1, 1, 1, 3])
+  n_hat = torch.Tensor([0., 0., 1.]).reshape([1,1,1,3]).to(device) # tf.constant([0., 0., 1.], shape=[1, 1, 1, 3])
   n_hat = n_hat.repeat([n_layers, n_batch, 1, 1])
   a = -torch.reshape(depths, [n_layers, n_batch, 1, 1])
   k_s = intrinsics
@@ -328,7 +325,7 @@ def open_image(fname, size=224, format=False):
     img = PIL.Image.open(fname).convert('RGB')
     if size is not None:
         img = img.resize((size, size))
-    t = torch.Tensor(np.array(img), device=device)
+    t = torch.Tensor(np.array(img)).to(device)
     # t.permute(2,0,1).float()/255.0
     if format:
       return t.float()/255.0
@@ -372,7 +369,7 @@ def pixel2cam_torch(depth, pixel_coords, intrinsics, is_homogeneous=True):
   pixel_coords = torch.reshape(pixel_coords, [batch, 3, -1])
   cam_coords = torch.matmul(torch.inverse(intrinsics), pixel_coords) * depth
   if is_homogeneous:
-    ones = torch.ones([batch, 1, height*width], device=device)
+    ones = torch.ones([batch, 1, height*width]).to(device)
     cam_coords = torch.cat([cam_coords, ones], axis=1)
   cam_coords = torch.reshape(cam_coords, [batch, -1, height, width])
   return cam_coords
@@ -407,7 +404,7 @@ def resampler_wrapper_torch(imgs, coords):
   """
   return torch.nn.functional.grid_sample(
       imgs.permute([0, 3, 1, 2]),             # change images from (N, H, W, C) to (N, C, H, W)
-      torch.Tensor([-1, -1], device=device) + 2.0 * coords   # resize coords from (0,1) to (-1, 1)
+      torch.Tensor([-1, -1]).to(device) + 2.0 * coords   # resize coords from (0,1) to (-1, 1)
       ).permute([0, 2, 3, 1])                 # change result from (N, C, H, W) to (N, H, W, C)
 
 def projective_inverse_warp_torch(
@@ -432,9 +429,9 @@ def projective_inverse_warp_torch(
   cam_coords = pixel2cam_torch(depth, pixel_coords, intrinsics)
 
   # Construct a 4x4 intrinsic matrix.
-  filler = torch.Tensor([[[0., 0., 0., 1.]]], device=device)
+  filler = torch.Tensor([[[0., 0., 0., 1.]]]).to(device)
   filler = filler.repeat(batch, 1, 1)
-  intrinsics = torch.cat([intrinsics, torch.zeros([batch, 3, 1], device=device)], axis=2)
+  intrinsics = torch.cat([intrinsics, torch.zeros([batch, 3, 1]).to(device)], axis=2)
   intrinsics = torch.cat([intrinsics, filler], axis=1)
 
   # Get a 4x4 transformation matrix from 'target' camera frame to 'source'
@@ -445,7 +442,7 @@ def projective_inverse_warp_torch(
   #print(f'src_pixel_coords shape {src_pixel_coords.shape}')
   #print(f'src_pixel_coords {L(src_pixel_coords[:, :, :3,:])}')
 
-  src_pixel_coords = ( src_pixel_coords + torch.Tensor([0.5, 0.5], device=device) ) / torch.Tensor([height, width], device=device)
+  src_pixel_coords = ( src_pixel_coords + torch.Tensor([0.5, 0.5]).to(device) ) / torch.Tensor([height, width]).to(device)
 
   output_img = resampler_wrapper_torch(img, src_pixel_coords)
   if ret_flows:
@@ -468,7 +465,7 @@ def plane_sweep_torch(img, depth_planes, pose, intrinsics):
   plane_sweep_volume = []
 
   for depth in depth_planes:
-    curr_depth = torch.zeros([batch, height, width], dtype=torch.float32, device=device) + depth
+    curr_depth = torch.zeros([batch, height, width], dtype=torch.float32).to(device) + depth
     warped_img = projective_inverse_warp_torch(img, curr_depth, pose, intrinsics)
     plane_sweep_volume.append(warped_img)
   plane_sweep_volume = torch.cat(plane_sweep_volume, axis=3)
@@ -501,6 +498,10 @@ def format_network_input_torch(self, ref_image, psv_src_images, ref_pose,
     net_input = torch.cat(net_input, axis=3)
     return net_input
 
+import torchvision
+from fastai.vision import *
+import matplotlib.pyplot as plt
+
 # shows an image
 # input:
 #   image: [C, H, W] torch tensor with values in range 0-255
@@ -526,15 +527,11 @@ def plane_sweep_torch_one(img, depth_planes, pose, intrinsics):
   plane_sweep_volume = []
 
   for depth in depth_planes:
-    curr_depth = torch.zeros([height, width], dtype=torch.float32, device=device) + depth
+    curr_depth = torch.zeros([height, width], dtype=torch.float32).to(device) + depth
     warped_img = projective_inverse_warp_torch(torch.unsqueeze(img, 0), torch.unsqueeze(curr_depth, 0), torch.unsqueeze(pose, 0), torch.unsqueeze(intrinsics, 0))
     plane_sweep_volume.append(warped_img)
   plane_sweep_volume = torch.cat(plane_sweep_volume, axis=3)
   return plane_sweep_volume
-
-def tester(image_path):
-  return PIL.Image.open(image_path).convert('RGB')
-
 
 def resize_with_intrinsics_torch(image_path, intrinsics, height, width):
     """
@@ -556,8 +553,8 @@ def resize_with_intrinsics_torch(image_path, intrinsics, height, width):
         width / input_width,
         height / input_height,
         1.0,
-    ], device=device)
+    ]).to(device)
     scaled_image = img.resize((width, height))
-    tensor_image = preprocess_image_torch(torch.Tensor(np.array(scaled_image), device=device)/255.0)
+    tensor_image = preprocess_image_torch(torch.Tensor(np.array(scaled_image)).to(device)/255.0)
     
     return tensor_image, scaled_pixel_intrinsics
