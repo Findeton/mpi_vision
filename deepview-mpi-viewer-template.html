@@ -271,10 +271,10 @@ function buildMPI(layers, width, height) {
   setDims(mpi, width, height);
   for (let i = 0; i < layers.length; i++) {
     const layer = create('div');
-    const url = layers[i].url;
+    const src = layers[i].src;
     const depth = layers[i].depth;
     const img = create('div', 'img');
-    img.style.backgroundImage = `url(${url})`;
+    img.style.backgroundImage = `url(${src})`;
     layer.style.transform = `scale(${nopx(depth)}) translateZ(-${px(depth)})`;
     layer.appendChild(img);
     mpi.appendChild(layer);
@@ -299,30 +299,19 @@ function setInfo(num_layers, width, height, url) {
   document.querySelector('#info #url').textContent = url;
 }
 
-function loadScene(layerzero, num_layers, width, height, near, far, fov) {
+function loadScene(imgSources, width, height, near, far, fov) {
+  num_layers = imgSources.length;
   const focal_length_px = 0.5 * width/Math.tan(fov/2 * Math.PI/180);
   // Near and far are in metres. ppm = pixels per metre.
   const ppm = 3600;
   const layers = [];
   const depths = [];
   ratio = near/far;
-  // If layerzero contains $, look for the last group of $. Otherwise, look for
-  // the last group of digits, which should be zeros.
-  layerzero = layerzero.replace(/%24/g, '$');
-  const match = (layerzero.match(/^(.*[^$|])([$]+)([^$]*)$/)
-    || layerzero.match(/^(.*[\D]|)([0]+)([\D]*)$/));
-  if (!match) {
-    error(`Path "${layerzero}" doesn't look like a layer zero URL.`);
-    return;
-  }
-  const prefix = match[1];
-  const mindigits = match[2].length;
-  const postfix = match[3];
 
-  setInfo(num_layers, width, height, prefix + '$'.repeat(mindigits) + postfix);
+  setInfo(num_layers, width, height, "mpi$$.png");
   for (let i = 0; i < num_layers; i++) {
     layers.push({
-      url: prefix + digits(i, mindigits) + postfix,
+      src: imgSources[i],
       depth: 1/lerp(ratio, 1, i/(num_layers - 1))});
   }
   buildHeatFilters(layers.length);
@@ -593,7 +582,7 @@ function buildMinis(layers, width, height) {
     for (let j = i; j < layers.length && j < i + groupsize; j++) {
       const row = create('div', 'row');
       const thumb = create('div', 'thumb');
-      thumb.style.backgroundImage = `url(${layers[j].url})`;
+      thumb.style.backgroundImage = `url(${layers[j].src})`;
       setDims(thumb, width, height);
       const num = create('div', 'num');
       num.textContent = j;
@@ -652,7 +641,7 @@ function tick(time) {
 function initFromParameters() {
   const params = new URL(window.location).searchParams;
   const layerzero = params.get('url') || "mpi$$.png";
-  const num_layers = parseInt(params.get('n'), 10) || 10;
+  const num_layers = parseInt(params.get('n'), 10) || mpiSources.length;
   const size = params.get('s') || "224,224";
   
   if (!layerzero) {
@@ -686,7 +675,7 @@ function initFromParameters() {
   far = parseFloat(params.get('far') || 100.0);
   fov = parseFloat(params.get('fov')|| 60);
   
-  loadScene(layerzero, num_layers, width, height, near, far, fov);
+  loadScene(mpiSources, width, height, near, far, fov);
 
   // Optional parameters to control other things.
   moveScale = parseFloat(params.get('mv') || 1.5);
