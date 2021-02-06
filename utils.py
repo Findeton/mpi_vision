@@ -570,3 +570,227 @@ def resize_with_intrinsics_torch(image_path, intrinsics, height, width):
     tensor_image = preprocess_image_torch(torch.Tensor(np.array(scaled_image)).to(device)/255.0)
     
     return tensor_image, scaled_pixel_intrinsics
+
+
+# fx, fy, cx, cy are simple scalars/floats
+def make_intrinsics_matrix(fx, fy, cx, cy):
+  return torch.Tensor([
+    [fx, 0.0, cx],
+    [0.0, fy, cy],
+    [0.0, 0.0, 1.0]
+  ]).to(device)
+
+def read_file_lines(filename):
+  """Reads a text file, skips comments, and lines.
+
+  Args:
+    filename: the file to read
+    max_lines: how many lines to combine into a single element. Any
+      further lines will be skipped. The Dataset API's batch function
+      requires this parameter, which is the batch size, so we set it to
+      something bigger than our sequences.
+
+  Returns:
+    The lines of the file, as a 1-dimensional string tensor.
+  """
+  with open(filename) as f:
+    lines = f.readlines()
+    return [l.replace('\n', '') for l in lines if l[0] != '#']
+
+
+def crop_to_bounding_box_torch(image, offset_y, offset_x, height, width):
+  """Crop an image to a bounding box
+
+  Args:
+    image: [batch, H, W, C] images
+    offset_y: y-offset in pixels from top of image
+    offset_x: x-offset in pixels from left of image
+    height: height of region to be cropped
+    width: width of region to be cropped
+
+  """
+  batch, img_height, img_width, _ = image.shape
+  crop_grid = meshgrid_abs_torch(batch, width, height) # [batch, C=3, H, W]
+  crop_grid = crop_grid[:,:2].permute(0,2,3,1) + torch.Tensor([offset_x + 0.5,offset_y + 0.5]).to(device)# [batch, H, W, 2]
+  crop_grid = crop_grid / torch.Tensor([img_width, img_height]).to(device)
+
+  return resampler_wrapper_torch(image, crop_grid)
+
+def crop_image_and_adjust_intrinsics_torch(
+    image, intrinsics, offset_y, offset_x, height, width):
+  """Crop images and adjust instrinsics accordingly.
+
+  Args:
+    image: [..., H, W, C] images
+    intrinsics: [..., 3, 3] normalised camera intrinsics # intrinsics = [fx fy cx cy]
+    offset_y: y-offset in pixels from top of image
+    offset_x: x-offset in pixels from left of image
+    height: height of region to be cropped
+    width: width of region to be cropped
+
+  Returns:
+    [..., height, width, C] cropped images,
+    [..., 3, 3] adjusted (normalized) intrinsics
+  """
+  original_height = image.shape[-3]
+  original_width = image.shape[-2]
+
+  # intrinsics = [fx fy cx cy]
+  # Convert to pixels, offset, and normalise to cropped size.
+  pixel_intrinsics = scale_intrinsics(intrinsics, original_height, original_width)
+  cropped_pixel_intrinsics = pixel_intrinsics - torch.Tensor([
+    [0., 0., float(offset_x)],
+    [0., 0., float(offset_y)],
+    [0., 0., 0.]
+  ]).to(device)
+  cropped_intrinsics = scale_intrinsics(cropped_pixel_intrinsics, 1./height, 1./width)
+  cropped_images = crop_to_bounding_box_torch(image, offset_y, offset_x, height, width)
+  return cropped_images, cropped_intrinsics
+
+def projective_pixel_transform(
+    depth, src_pixel_coords, src_pose, tgt_pose, src_intrinsics, tgt_intrinsics,
+    tgt_height, tgt_width
+):
+  """
+    Projects from a source camera pixel to a target camera pixel
+    Args:
+      depth: [batch, height, width]
+      src_pixel_coords: [batch, 3, height, width]
+      src_pose: world-to-cam transformation matrix [batch, 4, 4]
+      tgt_pose: world-to-cam target to source camera transformation matrix [batch, 4, 4]
+      src_intrinsics: (not normalised) source camera intrinsics [batch, 3, 3]
+      tgt_intrinsics: (not normalised) target camera intrinsics [batch, 3, 3]
+      tgt_height: target camera height in pixels (used to normalize tgt intrinsics)
+      tgt_width: target camera width in pixels (used to normalize tgt intrinsics)
+    Returns
+      tgt_pixel_coords: [batch, 3, height, width]
+  """
+  batch = depth.shape[0]
+  src_cam_coords = pixel2cam_torch(depth, src_pixel_coords, src_intrinsics)
+
+  filler = torch.Tensor([[[0., 0., 0., 1.]]]).to(device)
+  filler = filler.repeat(batch, 1, 1)
+  tgt_intrinsics4 = torch.cat([tgt_intrinsics, torch.zeros([batch, 3, 1]).to(device)], axis=2)
+  tgt_intrinsics4 = torch.cat([tgt_intrinsics4, filler], axis=1)
+  
+  # source camera coords to target camera coords
+  src_to_tgt_cam_coords = torch.matmul(tgt_pose, torch.inverse(src_pose))
+
+  # Get a 4x4 transformation matrix from 'target' camera frame to 'source'
+  # pixel frame.
+  proj_src_cam_to_tgt_pixel = torch.matmul(tgt_intrinsics4, src_to_tgt_cam_coords)
+  tgt_pixel_coords = cam2pixel_torch(src_cam_coords, proj_src_cam_to_tgt_pixel)
+
+  return tgt_pixel_coords
+
+def parse_camera_lines(lines):
+  """Reads a camera file, returning a single ViewSequence (without images).
+
+  Args:
+    lines: [N] string tensor of camera lines
+
+  Returns:
+    The corresponding length N sequence, as a ViewSequence.
+  """
+  # The first line contains the YouTube video URL.
+  # Format of each subsequent line: timestamp fx fy px py k1 k2 row0 row1  row2
+  # Column number:                  0         1  2  3  4  5  6  7-10 11-14 15-18
+  youtube_url = lines[0]
+  record_defaults = ([['']] + [[0.0]] * 18)
+  data = [ [float(n) if idx > 0 else int(n) for idx, n in enumerate(l.split(' ')) ] for l in lines[1:] ] # simple parse csv by splitting by space
+
+  # We don't accept non-zero k1 and k2.
+  assert(0 == len(list(filter(lambda x: x[5] != 0.0 or x[6] != 0.0, data))))
+
+  timestamps = [l[0] for l in data]
+  intrinsics = [ l[1:5] for l in data] #tf.stack(data[1:5], axis=1)
+  poses = [ [l[7:11], l[11:15], l[15:19], [0., 0., 0., 1.]] for l in data ] # utils.build_matrix([data[7:11], data[11:15], data[15:19]])
+
+  # In camera files, the video id is the last part of the YouTube URL, it comes
+  # after the =.
+  youtubeIDOffset = youtube_url.find("/watch?v=") + len('/watch?v=')
+  youtube_id = youtube_url[youtubeIDOffset:]
+  return {
+      'youtube_id': youtube_id,
+      'timestamps': timestamps,
+      'intrinsics': intrinsics,
+      'poses': poses, # poses is world to camera (c_f_w o w_t_c)
+  }
+
+
+
+def projective_inverse_warp_torch2(
+    img, depth, pose, src_intrinsics, tgt_intrinsics, tgt_height, tgt_width, ret_flows=False):
+  """Inverse warp a source image to the target image plane based on projection.
+
+  Args:
+    img: the source image [batch, height_s, width_s, 3]
+    depth: depth map of the target image [batch, height_t, width_t]
+    pose: target to source camera transformation matrix [batch, 4, 4]
+    src_intrinsics: source camera intrinsics [batch, 3, 3]
+    tgt_intrinsics: target camera intrinsics [batch, 3, 3]
+    tgt_height: pixel height for the target image
+    tgt_width: pixel width for the target image
+    ret_flows: whether to return the displacements/flows as well
+  Returns:
+    Source image inverse warped to the target image plane [batch, height_t,
+    width_t, 3]
+  """
+  batch, height, width, _ = img.shape
+  # Construct pixel grid coordinates.
+  pixel_coords = meshgrid_abs_torch(batch, tgt_height, tgt_width)
+
+  # Convert pixel coordinates to the camera frame.
+  cam_coords = pixel2cam_torch(depth, pixel_coords, tgt_intrinsics)
+
+  # Construct a 4x4 intrinsic matrix.
+  filler = torch.Tensor([[[0., 0., 0., 1.]]]).to(device)
+  filler = filler.repeat(batch, 1, 1)
+  src_intrinsics4 = torch.cat([src_intrinsics, torch.zeros([batch, 3, 1]).to(device)], axis=2)
+  src_intrinsics4 = torch.cat([src_intrinsics4, filler], axis=1)
+
+  # Get a 4x4 transformation matrix from 'target' camera frame to 'source'
+  # pixel frame.
+  proj_tgt_cam_to_src_pixel = torch.matmul(src_intrinsics4, pose)
+  src_pixel_coords = cam2pixel_torch(cam_coords, proj_tgt_cam_to_src_pixel)
+
+  #print(f'src_pixel_coords shape {src_pixel_coords.shape}')
+  #print(f'src_pixel_coords {L(src_pixel_coords[:, :, :3,:])}')
+
+  src_pixel_coords = ( src_pixel_coords + torch.Tensor([0.5, 0.5]).to(device) ) / torch.Tensor([height, width]).to(device)
+
+  output_img = resampler_wrapper_torch(img, src_pixel_coords)
+  if ret_flows:
+    return output_img, src_pixel_coords - cam_coords
+  else:
+    return output_img
+
+def plane_sweep_torch_one2(img, depth_planes, pose, src_intrinsics, tgt_intrinsics, tgt_height, tgt_width):
+  """Construct a plane sweep volume.
+
+  Args:
+    img: source image [height, width, #channels]
+    depth_planes: a list of depth values for each plane
+    pose: target to source camera transformation [4, 4]
+    src_intrinsics: source camera intrinsics [3, 3]
+    tgt_intrinsics: target camera intrinsics [3, 3]
+    tgt_height: pixel height for the target image
+    tgt_width: pixel width for the target image
+    tgt
+  Returns:
+    A plane sweep volume [height, width, #planes*#channels]
+  """
+  height = img.shape[0]
+  width = img.shape[1]
+  plane_sweep_volume = []
+
+  for depth in depth_planes:
+    curr_depth = torch.zeros([tgt_height, tgt_width], dtype=torch.float32).to(device) + depth
+    warped_img = projective_inverse_warp_torch2(
+        torch.unsqueeze(img, 0), torch.unsqueeze(curr_depth, 0), 
+        torch.unsqueeze(pose, 0), torch.unsqueeze(src_intrinsics, 0), 
+        torch.unsqueeze(tgt_intrinsics, 0) , tgt_height, tgt_width
+    )
+    plane_sweep_volume.append(warped_img)
+  plane_sweep_volume = torch.cat(plane_sweep_volume, axis=3)
+  return plane_sweep_volume
