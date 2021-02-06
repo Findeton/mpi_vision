@@ -794,3 +794,24 @@ def plane_sweep_torch_one2(img, depth_planes, pose, src_intrinsics, tgt_intrinsi
     plane_sweep_volume.append(warped_img)
   plane_sweep_volume = torch.cat(plane_sweep_volume, axis=3)
   return plane_sweep_volume
+
+# space_to_depth
+# From: https://stackoverflow.com/questions/58857720/is-there-an-equivalent-pytorch-function-for-tf-nn-space-to-depth
+class SpaceToDepth(Module):
+    __constants__ = ['downscale_factor']
+    downscale_factor: int
+
+    def __init__(self, downscale_factor: int) -> None:
+        super(SpaceToDepth, self).__init__()
+        self.downscale_factor = downscale_factor
+
+    def forward(self, x: Tensor) -> Tensor:
+        n, c, h, w = x.size()
+        unfolded_x = torch.nn.functional.unfold(x, self.downscale_factor, stride=self.downscale_factor)
+        return unfolded_x.view(n, c * self.downscale_factor * self.downscale_factor, h // self.downscale_factor, w // self.downscale_factor)
+
+    def extra_repr(self) -> str:
+        return 'downscale_factor={}'.format(self.downscale_factor)
+
+# tensorflow's depth_to_space is like torch.nn.functional.pixel_shuffle 
+DepthToSpace = torch.nn.PixelShuffle
