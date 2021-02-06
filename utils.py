@@ -247,7 +247,7 @@ def projective_forward_homography_torch(src_images, intrinsics, pose, depths):
   """
   n_layers, n_batch, height, width, _ = src_images.shape
   # Format for planar_transform code:
-  # rot: relative rotation, [..., 3, 3] matrices
+  # rot: relativplane_sweep_torch_onee rotation, [..., 3, 3] matrices
   # t: [B, 3, 1], translations from source to target camera (R*p_s + t = p_t)
   # n_hat: [L, B, 1, 3], plane normal w.r.t source camera frame [0,0,1]
   #        in our case
@@ -374,7 +374,6 @@ def pixel2cam_torch(depth, pixel_coords, intrinsics, is_homogeneous=True):
   cam_coords = torch.reshape(cam_coords, [batch, -1, height, width])
   return cam_coords
 
-
 def cam2pixel_torch(cam_coords, proj):
   """Transforms coordinates in a camera frame to the pixel frame.
 
@@ -480,7 +479,7 @@ def format_network_input_torch(self, ref_image, psv_src_images, ref_pose,
       psv_src_images: stack of source images (excluding the ref image)
                       [batch, height, width, 3*(num_source -1)]
       ref_pose: reference world-to-camera pose (where PSV is constructed)
-                [batch, 4, 4]
+                [batchprojective_inverse_warp_torch, 4, 4]
       psv_src_poses: input poses (world to camera) [batch, num_source-1, 4, 4]
       planes: list of scalar depth values for each plane
       intrinsics: camera intrinsics [batch, 3, 3]
@@ -533,6 +532,20 @@ def plane_sweep_torch_one(img, depth_planes, pose, intrinsics):
   plane_sweep_volume = torch.cat(plane_sweep_volume, axis=3)
   return plane_sweep_volume
 
+def scale_intrinsics(intrinsics, height, width):
+   """ scale intrinsics with the (height, width) factors
+  Args:
+    intrinsics: [3, 3]
+    height: height or height ratio for the scaling
+    width: width or width ratio for the scaling
+ """
+  return intrinsics * torch.Tensor([
+    [width, 1.0, width],
+    [0.0, height, height],
+    [0.0, 0.0, 1.0]
+  ]).to(device)
+
+
 def resize_with_intrinsics_torch(image_path, intrinsics, height, width):
     """
     Args:
@@ -547,13 +560,12 @@ def resize_with_intrinsics_torch(image_path, intrinsics, height, width):
     img = PIL.Image.open(image_path).convert('RGB')
     input_height = img.height
     input_width = img.width
-    #width = int( input_width * height / input_height)
     
-    scaled_pixel_intrinsics = intrinsics * torch.Tensor([
-        width / input_width,
+    scaled_pixel_intrinsics = scale_intrinsics(
+        intrinsics,
         height / input_height,
-        1.0,
-    ]).to(device)
+        width / input_width,
+    )
     scaled_image = img.resize((width, height))
     tensor_image = preprocess_image_torch(torch.Tensor(np.array(scaled_image)).to(device)/255.0)
     
