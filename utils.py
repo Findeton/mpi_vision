@@ -533,12 +533,12 @@ def plane_sweep_torch_one(img, depth_planes, pose, intrinsics):
   return plane_sweep_volume
 
 def scale_intrinsics(intrinsics, height, width):
-   """ scale intrinsics with the (height, width) factors
-  Args:
-    intrinsics: [3, 3]
-    height: height or height ratio for the scaling
-    width: width or width ratio for the scaling
- """
+  """ scale intrinsics with the (height, width) factors
+    Args:
+      intrinsics: [3, 3]
+      height: height or height ratio for the scaling
+      width: width or width ratio for the scaling
+  """
   return intrinsics * torch.Tensor([
     [width, 1.0, width],
     [0.0, height, height],
