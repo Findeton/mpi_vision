@@ -27,7 +27,7 @@ def meshgrid_abs_torch(batch, height, width):
   """
   xs = torch.linspace(0.0, width-1, width)
   ys = torch.linspace(0.0, height-1, height)
-  ys, xs = torch.meshgrid(xs, ys)
+  ys, xs = torch.meshgrid(ys, xs)
   ones = torch.ones_like(xs).to(device)
   coords = torch.stack([xs.to(device), ys.to(device), ones], axis=0)
   return torch.unsqueeze(coords, 0).repeat(batch, 1, 1, 1)
@@ -607,6 +607,9 @@ def crop_to_bounding_box_torch(image, offset_y, offset_x, height, width):
     offset_x: x-offset in pixels from left of image
     height: height of region to be cropped
     width: width of region to be cropped
+
+  Return:
+    [batch, height, width, C] 
 
   """
   batch, img_height, img_width, _ = image.shape
