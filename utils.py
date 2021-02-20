@@ -613,7 +613,7 @@ def crop_to_bounding_box_torch(image, offset_y, offset_x, height, width):
 
   """
   batch, img_height, img_width, _ = image.shape
-  crop_grid = meshgrid_abs_torch(batch, width, height) # [batch, C=3, H, W]
+  crop_grid = meshgrid_abs_torch(batch, height, width) # [batch, C=3, H, W]
   crop_grid = crop_grid[:,:2].permute(0,2,3,1) + torch.Tensor([offset_x + 0.5,offset_y + 0.5]).to(device)# [batch, H, W, 2]
   crop_grid = crop_grid / torch.Tensor([img_width, img_height]).to(device)
 
